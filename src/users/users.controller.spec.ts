@@ -1,3 +1,8 @@
+// Mock do UsersService para não carregar a cadeia firebase-admin nos testes unitários
+jest.mock('./users.service', () => ({
+  UsersService: jest.fn(),
+}));
+
 import { Test, TestingModule } from '@nestjs/testing';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
