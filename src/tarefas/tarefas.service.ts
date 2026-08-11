@@ -1,5 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CollectionReference, Timestamp } from 'firebase-admin/firestore';
+import {
+  CollectionReference,
+  DocumentData,
+  QuerySnapshot,
+  Timestamp,
+} from 'firebase-admin/firestore';
 import { FirebaseService } from '../firebase/firebase.service';
 import { serializeFirestoreData } from '../common/utils/serialize-firestore-data.util';
 import { CreateTarefaDto } from './dto/create-tarefa.dto';
@@ -28,8 +33,8 @@ export class TarefasService {
       turmaIds: createTarefaDto.turmaIds,
       professorId: createTarefaDto.professorId,
       xpRecompensa: createTarefaDto.xpRecompensa,
-      staticRules: createTarefaDto.staticRules ?? [],
-      testCases: createTarefaDto.testCases ?? [],
+      staticRules: (createTarefaDto.staticRules ?? []).map((r) => ({ ...r })),
+      testCases: (createTarefaDto.testCases ?? []).map((t) => ({ ...t })),
       scaffoldCode: createTarefaDto.scaffoldCode ?? null,
       criadaEm: Timestamp.now(),
       prazo: createTarefaDto.prazo
@@ -38,6 +43,9 @@ export class TarefasService {
     };
 
     await docRef.set(data);
+
+    // Cria o progresso inicial dos alunos das turmas vinculadas
+    await this.criarProgressoInicial(tarefaId, data.turmaIds, data.prazo);
 
     return serializeFirestoreData<Tarefa>(data);
   }
@@ -78,6 +86,16 @@ export class TarefasService {
 
     const patch: Record<string, unknown> = { ...updateTarefaDto };
 
+    if (patch.staticRules) {
+      patch.staticRules = (patch.staticRules as Record<string, unknown>[]).map(
+        (r) => ({ ...r }),
+      );
+    }
+    if (patch.testCases) {
+      patch.testCases = (patch.testCases as Record<string, unknown>[]).map(
+        (t) => ({ ...t }),
+      );
+    }
     if (patch.prazo) {
       patch.prazo = Timestamp.fromDate(new Date(patch.prazo as string));
     }
@@ -93,5 +111,46 @@ export class TarefasService {
       throw new NotFoundException(`Tarefa ${tarefaId} não encontrada`);
     }
     await doc.ref.delete();
+  }
+
+  // Cria o progresso inicial (disponivel ou bloqueada) de todos os alunos
+  // das turmas vinculadas à tarefa
+  private async criarProgressoInicial(
+    tarefaId: string,
+    turmaIds: string[],
+    prazo: Timestamp | null,
+  ): Promise<void> {
+    if (turmaIds.length === 0) return;
+
+    const alunos: QuerySnapshot<DocumentData> = await this.firebase.db
+      .collection('users')
+      .where('role', '==', 'aluno')
+      .where('turmaId', 'in', turmaIds)
+      .get();
+
+    if (alunos.empty) return;
+
+    const status =
+      prazo && prazo.toMillis() < Date.now() ? 'bloqueada' : 'disponivel';
+
+    const batch = this.firebase.db.batch();
+    const progresso = this.firebase.db.collection('progresso');
+
+    for (const aluno of alunos.docs) {
+      const progressoId = `${aluno.id}_${tarefaId}`;
+      batch.set(progresso.doc(progressoId), {
+        progressoId,
+        alunoId: aluno.id,
+        tarefaId,
+        status,
+        tentativas: 0,
+        melhorNota: 0,
+        xpGanho: 0,
+        ultimaTentativa: null,
+        errosComuns: [],
+      });
+    }
+
+    await batch.commit();
   }
 }

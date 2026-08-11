@@ -1,6 +1,12 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { App, ServiceAccount, initializeApp, cert, deleteApp } from 'firebase-admin/app';
+import {
+  App,
+  ServiceAccount,
+  initializeApp,
+  cert,
+  deleteApp,
+} from 'firebase-admin/app';
 import { Firestore, getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { Auth, getAuth } from 'firebase-admin/auth';
 

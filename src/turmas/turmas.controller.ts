@@ -12,11 +12,13 @@ import {
 import { TurmasService } from './turmas.service';
 import { CreateTurmaDto } from './dto/create-turma.dto';
 import { UpdateTurmaDto } from './dto/update-turma.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
 
 @Controller('turmas')
 export class TurmasController {
   constructor(private readonly turmasService: TurmasService) {}
 
+  @Roles('professor')
   @Post()
   create(@Body() createTurmaDto: CreateTurmaDto) {
     return this.turmasService.create(createTurmaDto);
@@ -32,6 +34,7 @@ export class TurmasController {
     return this.turmasService.findOne(turmaId);
   }
 
+  @Roles('professor')
   @Patch(':turmaId')
   update(
     @Param('turmaId') turmaId: string,
@@ -40,6 +43,7 @@ export class TurmasController {
     return this.turmasService.update(turmaId, updateTurmaDto);
   }
 
+  @Roles('professor')
   @Delete(':turmaId')
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('turmaId') turmaId: string) {

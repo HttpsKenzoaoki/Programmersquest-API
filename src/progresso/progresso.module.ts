@@ -5,5 +5,6 @@ import { ProgressoController } from './progresso.controller';
 @Module({
   controllers: [ProgressoController],
   providers: [ProgressoService],
+  exports: [ProgressoService],
 })
 export class ProgressoModule {}

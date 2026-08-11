@@ -90,6 +90,20 @@ export class ProgressoService {
     return this.findOne(this.buildProgressoId(alunoId, tarefaId));
   }
 
+  async findOneForOptional(
+    alunoId: string,
+    tarefaId: string,
+  ): Promise<Progresso | null> {
+    const doc = await this.collection
+      .doc(this.buildProgressoId(alunoId, tarefaId))
+      .get();
+    if (!doc.exists) return null;
+    return serializeFirestoreData<Progresso>({
+      progressoId: doc.id,
+      ...doc.data(),
+    });
+  }
+
   async update(
     progressoId: string,
     updateProgressoDto: UpdateProgressoDto,

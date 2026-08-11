@@ -13,11 +13,13 @@ import {
 import { TarefasService } from './tarefas.service';
 import { CreateTarefaDto } from './dto/create-tarefa.dto';
 import { UpdateTarefaDto } from './dto/update-tarefa.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
 
 @Controller('tarefas')
 export class TarefasController {
   constructor(private readonly tarefasService: TarefasService) {}
 
+  @Roles('professor')
   @Post()
   create(@Body() createTarefaDto: CreateTarefaDto) {
     return this.tarefasService.create(createTarefaDto);
@@ -36,6 +38,7 @@ export class TarefasController {
     return this.tarefasService.findOne(tarefaId);
   }
 
+  @Roles('professor')
   @Patch(':tarefaId')
   update(
     @Param('tarefaId') tarefaId: string,
@@ -44,6 +47,7 @@ export class TarefasController {
     return this.tarefasService.update(tarefaId, updateTarefaDto);
   }
 
+  @Roles('professor')
   @Delete(':tarefaId')
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('tarefaId') tarefaId: string) {

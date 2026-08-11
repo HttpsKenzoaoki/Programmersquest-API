@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DocumentReference } from 'firebase-admin/firestore';
 import { FirebaseService } from '../firebase/firebase.service';
 import { serializeFirestoreData } from '../common/utils/serialize-firestore-data.util';
+import { notaParaConceito } from '../common/utils/nota-para-conceito.util';
 import { UpdateConfiguracoesDto } from './dto/update-configuracoes.dto';
 import { Configuracoes } from './entities/configuracoes.entity';
 
@@ -40,5 +41,18 @@ export class ConfiguracoesService {
     await doc.ref.update({ escalaDeNota: updateConfiguracoesDto.escalaDeNota });
 
     return this.findByTurma(turmaId);
+  }
+
+  // Converte uma nota (0-100) para o conceito I/R/B/MB da escala da turma
+  async conceito(
+    turmaId: string,
+    nota: number,
+  ): Promise<{ nota: number; conceito?: string; cor?: string }> {
+    const config = await this.findByTurma(turmaId);
+    const resultado = notaParaConceito(nota, config.escalaDeNota);
+    if (!resultado) {
+      return { nota };
+    }
+    return { nota, ...resultado };
   }
 }
