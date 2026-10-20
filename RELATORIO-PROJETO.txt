@@ -1,0 +1,441 @@
+================================================================================
+PROGRAMMER'S QUEST - RELATÓRIO COMPLETO DO QUE FOI FEITO
+Projeto escolar (ETEC) - Jogo educativo gamificado de programação
+Data: 10/08/2026
+================================================================================
+
+O que é o projeto
+-----------------
+O Programmer's Quest é uma plataforma gamificada estilo RPG para ensinar
+lógica de programação. Alunos viram "heróis" que completam missões (desafios
+de código, quizzes e exercícios), ganham XP, sobem de nível e desbloqueiam
+fases de uma trilha de aprendizado. Professores criam turmas e tarefas e
+acompanham o progresso dos alunos.
+
+O sistema é dividido em dois repositórios:
+
+  1. Programmersquest-API  -> backend (NestJS + Firebase)
+  2. Programmersquest-WEB  -> frontend (Next.js + React + Firebase)
+
+Este arquivo explica, em detalhes, TUDO que foi implementado em cada um.
+
+================================================================================
+PARTE 1 - BACKEND (API)
+Repositório: /home/kenzoaoki/Repositorios/Programmersquest-API
+================================================================================
+
+1.1 TECNOLOGIAS
+---------------
+- NestJS 11 (Node.js + TypeScript) - framework do backend
+- Firebase Admin SDK 14:
+  - Authentication: verificação de tokens e gerenciamento de usuários
+  - Cloud Firestore: banco de dados (documentos)
+- class-validator + class-transformer: validação dos dados recebidos
+- Execução de código em subprocessos locais (node, python3, gcc)
+- Testes com Jest
+
+1.2 CONFIGURAÇÃO (.env)
+-----------------------
+O backend depende de um projeto Firebase. As credenciais ficam em um arquivo
+.env (que NÃO é versionado). Exemplo do .env.example:
+
+  PORT=3000
+  FIREBASE_DATABASE_URL=https://SEU-PROJETO.firebaseio.com
+  FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"seu-projeto",...}
+
+- O FIREBASE_SERVICE_ACCOUNT é o JSON da "conta de serviço" gerado no
+  Console Firebase > Configurações do projeto > Contas de serviço.
+- Os arquivos JSON de conta de serviço (*-adminsdk-*.json) foram adicionados
+  ao .gitignore para nunca serem commitados.
+- A API sobe na porta 3000 com CORS aberto.
+
+1.3 AUTENTICAÇÃO E PERMISSÕES
+-----------------------------
+Todo o fluxo de segurança é feito com 3 guards globais + decorators:
+
+  a) FirebaseAuthGuard
+     - Valida o token enviado no header "Authorization: Bearer <token>"
+     - Injeta no request: user = { uid, email?, role? }
+     - Rotas marcadas com @Public() não exigem token.
+
+  b) RolesGuard
+     - Exige papéis específicos, ex.: @Roles('professor').
+     - Se o role não for o exigido -> 403 "Acesso negado para este perfil".
+
+  c) OwnerOrProfessorGuard
+     - Permite que o DONO do recurso acesse, ou qualquer PROFESSOR.
+     - Ex.: @Owner('uid') -> aluno só mexe nos próprios dados.
+     - Suporta id composto (progresso "uid_tarefaId").
+
+  Decorators criados:
+  - @Public()            -> rota sem autenticação
+  - @Roles('aluno'|'professor') -> restringe a rota
+  - @Owner(param, source, composite) -> dono ou professor
+  - @CurrentUser()       -> injeta { uid, email?, role? } no handler
+
+1.4 MÓDULOS IMPLEMENTADOS (src/)
+--------------------------------
+Estrutura de pastas:
+
+  src/
+  ├── auth/            -> autenticação + guards + decorators
+  ├── users/           -> CRUD de usuários
+  ├── turmas/          -> CRUD de turmas
+  ├── tarefas/         -> CRUD de tarefas
+  ├── progresso/       -> progresso do aluno por tarefa
+  ├── configuracoes/   -> escala de notas por turma
+  ├── execucao/        -> execução de código e correção automática
+  ├── common/          -> tipos do Firestore, utilidades, constantes
+  └── firebase/        -> inicialização do Admin SDK
+
+DETALHAMENTO DE CADA MÓDULO:
+
+  a) AUTH (src/auth/)
+     - POST /auth/register   (público)
+       Recebe { idToken, nome, rm, role, turmaId? }.
+       Cria o perfil em Firestore (users/uid) e grava o papel no token
+       (custom claim). Valida RM (somente dígitos, até 6).
+       Erros: 401 token inválido, 409 perfil já existe.
+     - POST /auth/login      (público)
+       Recebe { idToken }. Verifica o token, recalcula o STREAK do aluno
+       (dias seguidos de acesso) e retorna o perfil completo.
+       Erros: 401 token inválido, 404 perfil não existe.
+     - GET /auth/me          (autenticado)
+       Retorna o perfil do usuário logado.
+     - Cálculo de streak:
+       mesmo dia mantém; +1 dia incrementa; mais de 1 dia zera para 1.
+
+  b) USERS (src/users/)
+     - POST /users           (somente professor) -> cria usuário direto
+     - GET /users            (somente professor) -> lista usuários
+     - GET /users/:uid       (dono ou professor) -> busca 1 usuário
+     - PATCH /users/:uid     (dono ou professor) -> atualiza (aluno não
+       pode mudar o próprio role - proteção contra escalada de privilégio)
+     - DELETE /users/:uid    (dono ou professor)
+     - Campos do perfil: uid, nome, rm, email, role, turmaId, trilha,
+       xpTotal, nivel, streak, ultimoAcessoEm, criadoEm.
+     - O nivel é calculado automaticamente: floor(xp/100)+1 (máx 10).
+
+  c) TURMAS (src/turmas/)
+     - POST /turmas          (professor) -> cria turma { ano, curso, letra,
+       professorId }. O nome é gerado ("1 DS - Turma A"). Ao criar, cria
+       automaticamente o documento de configurações (escala de notas padrão).
+     - GET /turmas           (autenticado) -> lista turmas
+     - GET /turmas/:turmaId  (autenticado)
+     - PATCH /turmas/:turmaId (professor) -> atualiza (recalcula nome)
+     - DELETE /turmas/:turmaId (professor) -> deleta turma + configurações
+
+  d) TAREFAS (src/tarefas/)
+     - POST /tarefas         (professor)
+       Campos: titulo, descricao, linguagem (portugol|c|javascript|python),
+       nivel (iniciante|intermediario|avancado), tipo (quiz|fill-in|
+       correcao|codigo-livre|scaffold), turmaIds[], professorId,
+       xpRecompensa, staticRules[], testCases[], scaffoldCode, prazo.
+       Ao criar, gera automaticamente o PROGRESSO INICIAL de todos os
+       alunos das turmas vinculadas (status "disponivel" ou "bloqueada"
+       se o prazo já passou).
+     - GET /tarefas          (autenticado) -> com filtro ?turmaId=
+     - GET /tarefas/:tarefaId (autenticado)
+     - PATCH /tarefas/:tarefaId (professor)
+     - DELETE /tarefas/:tarefaId (professor)
+
+  e) PROGRESSO (src/progresso/)
+     - POST /progresso       (dono ou professor) -> cria progresso
+     - GET /progresso        (autenticado, aluno só vê o próprio)
+       Filtros: ?alunoId= e ?tarefaId=
+     - GET /progresso/find/:alunoId/:tarefaId (dono ou professor)
+     - GET /progresso/:progressoId (dono ou professor)
+     - PATCH /progresso/:progressoId (dono ou professor)
+     - DELETE /progresso/:progressoId (professor)
+     - O id do progresso é composto: "alunoId_tarefaId".
+     - Campos: status (bloqueada|disponivel|em-andamento|concluida),
+       tentativas, melhorNota (0-100), xpGanho, ultimaTentativa, errosComuns.
+
+  f) CONFIGURAÇÕES (src/configuracoes/)
+     - GET /configuracoes/:turmaId (autenticado) -> escala de notas da turma
+     - GET /configuracoes/:turmaId/conceito?nota=N (autenticado)
+       Converte uma nota em conceito ETEC: I, R, B ou MB + cor.
+       Escala padrão: 0-30=I, 30-50=R, 50-80=B, 80-100=MB.
+     - PATCH /configuracoes/:turmaId (professor) -> edita a escala
+       (min, max, conceito, cor)
+
+  g) EXECUÇÃO DE CÓDIGO (src/execucao/) - o coração do jogo
+     - POST /execucao        (autenticado)
+       Recebe { tarefaId, codigo } e faz:
+         1. Se a tarefa é "scaffold", monta o código final substituindo
+            o marcador "// SEU CODIGO AQUI" pelo código do aluno.
+         2. Aplica as REGRAS ESTÁTICAS (staticRules):
+            - variable_name    : exige um nome de variável
+            - must_use         : exige usar uma expressão
+            - forbidden        : proíbe algo
+            - min_occurrences  : exige N ocorrências
+            Se falhar em alguma regra -> nota 0 e nenhum teste roda.
+         3. Executa os TEST CASES (testCases: input + expectedOutput):
+            - javascript: roda com "node -e"
+            - python: roda com "python3 -c"
+            - c: compila com "gcc" em /tmp e executa
+            - portugol: ainda não tem executor; se não houver erro
+              estático, recebe nota 100 direto
+            - Timeout de 3 segundos por execução, buffer 1MB
+         4. Calcula a nota = percentual de testes passados (arredondado).
+            Sem testes e sem erro estático -> nota 100.
+         5. Atualiza o PROGRESSO do aluno:
+            - tentativas +1
+            - melhorNota = maior entre atual e anterior
+            - status: nota >= 60 (NOTA_MINIMA_CONCLUSAO) -> "concluida",
+              senão -> "em-andamento"
+            - xpGanho = máximo entre anterior e xpRecompensa*nota/100
+            - a diferença de XP é SOMADA ao xpTotal do aluno (perfil)
+       Resposta: { tarefaId, linguagem, aprovada, nota, xpGanho,
+         errosComuns, erroExecucao, testes[], progresso{} }
+     - Permissões: professor executa qualquer tarefa; aluno precisa ter
+       turma vinculada à tarefa, senão 403. Se o prazo passou -> 400.
+
+  h) COMMON (src/common/)
+     - Types do Firestore: Role, Trilha, Linguagem, TarefaNivel,
+       TipoTarefa, StatusProgresso, Conceito, StaticRule, TestCase,
+       EscalaDeNota.
+     - static-rules.util.ts: avalia as regras estáticas por linguagem.
+     - nota-para-conceito.util.ts: converte nota -> conceito/conceito+cor.
+     - serialize-firestore-data.util.ts: converte Timestamps em strings
+       ISO para as respostas JSON.
+     - Constante NOTA_MINIMA_CONCLUSAO = 60.
+     - Escala padrão ETEC (I/R/B/MB com cores).
+
+1.5 SCRIPT DE CRIAÇÃO DE USUÁRIOS
+---------------------------------
+Como o cadastro é feito por professor/administração, foi criado o script:
+
+  node scripts/criar-usuario.mjs \
+    --email aluno@etec.sp.gov.br \
+    --senha 123456 \
+    --nome "Fulano" \
+    --rm 123456 \
+    --role aluno \
+    --turmaId <id-da-turma>
+
+- Cria o usuário no Firebase Auth (e-mail + senha)
+- Define o papel no token (custom claim: role)
+- Cria o perfil no Firestore (trilha iniciante, xpTotal 0, nivel 1,
+  streak 0, etc.)
+
+1.6 BUG CORRIGIDO (importante)
+------------------------------
+- O POST /tarefas retornava erro 500 porque o Firestore não consegue
+  serializar instâncias de DTO (objetos criados com "new" pela
+  class-transformer) dentro dos arrays testCases/staticRules.
+- Correção: no TarefasService (create e update), os itens dos arrays são
+  convertidos para objetos simples com spread ({ ...item }) antes de
+  gravar no Firestore.
+
+1.7 TESTES, LINT E BUILD
+------------------------
+- npm test        -> testes unitários (Jest) - passando
+- npm run lint    -> eslint + prettier - passando
+- npm run build   -> nest build - passando
+
+1.8 VALIDAÇÃO DE PONTA A PONTA (teste real)
+-------------------------------------------
+Foi feito um teste completo contra o projeto Firebase real:
+- Criado professor (prof.teste@etec.sp.gov.br) e aluno
+  (aluno.teste@etec.sp.gov.br), ambos senha 123456.
+- Criada a turma "1 DS - Turma A" (via API, com token do professor).
+- Criada a tarefa "Escreva seu primeiro programa" (scaffold portugol,
+  50 XP, teste "Ola, mundo!"), que gerou o progresso inicial do aluno.
+- Login do aluno -> streak atualizado -> listou tarefas da turma e o
+  progresso "disponivel".
+- Execução do código correto -> aprovada, nota 100, XP 50, status
+  "concluida".
+
+================================================================================
+PARTE 2 - FRONTEND (WEB)
+Repositório: /home/kenzoaoki/Repositorios/Programmersquest-WEB
+================================================================================
+
+2.1 TECNOLOGIAS
+---------------
+- Next.js 16 (App Router) + React 19 - em JavaScript
+- Firebase (client SDK) - autenticação no navegador
+- @monaco-editor/react - editor de código dos desafios
+- Tailwind CSS 4 (instalado, mas o layout usa CSS próprio por página)
+- Tema visual RPG (roxo/escuro), em português
+
+2.2 CONFIGURAÇÃO (.env.local)
+-----------------------------
+As credenciais PÚBLICAS do Firebase (client SDK) + a URL da API ficam no
+arquivo .env.local (não versionado):
+
+  NEXT_PUBLIC_API_URL=http://localhost:3000
+  NEXT_PUBLIC_FIREBASE_API_KEY=...
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
+  NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=...
+  NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
+  NEXT_PUBLIC_FIREBASE_APP_ID=...
+  NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=...
+
+2.3 BIBLIOTECAS CRIADAS (src/lib/)
+----------------------------------
+  a) src/lib/firebase.js
+     - Inicializa o Firebase (client SDK) com as variáveis de ambiente.
+     - Exporta a instância de autenticação (auth).
+     - Evita reinicialização em múltiplas chamadas (HMR/SSR).
+
+  b) src/lib/api.js
+     - Wrapper HTTP para a API. Toda chamada envia o idToken fresco do
+       Firebase no header "Authorization: Bearer <token>".
+     - Lança { status, data } em caso de erro.
+     - Funções: request, loginApi, me, getUsuario, listarTurmas,
+       listarTarefas, listarProgresso, getProgresso, getConceito,
+       executarTarefa.
+
+  c) src/lib/auth.js
+     - login(email, senha): signInWithEmailAndPassword no Firebase,
+       chama POST /auth/login, salva o perfil no localStorage e retorna.
+     - cadastrar(email, senha): cria usuário no Firebase (sem perfil ainda).
+     - logout(): limpa o perfil local e desloga do Firebase.
+     - useFirebaseUser(): hook que observa o estado da sessão.
+     - useAuthGuard(): hook que redireciona para /login se não logado.
+     - salvarPerfil / limparPerfil / getPerfilLocal: leitura/escrita no
+       localStorage (chave "pq_user").
+
+2.4 COMPONENTES (src/components/)
+---------------------------------
+  RequireAuth.jsx:
+  - Guard de rota autenticada (render-prop).
+  - Observa o Firebase; se não logado -> redireciona /login.
+  - Se logado, chama GET /auth/me para obter o perfil e passa para a
+    página via children(perfil).
+  - Enquanto carrega, mostra "Carregando...".
+
+2.5 PÁGINAS (src/app/)
+----------------------
+  a) / (landing) - page.js
+     - Página de marketing (mockup). Botões sem ação real.
+     - Não precisa de dados do backend.
+
+  b) /login - page.js  -> INTEGRADO DE VERDADE
+     - Formulário de e-mail/senha.
+     - Ao enviar: login(email, senha) -> autentica no Firebase + valida
+       na API + salva perfil -> redireciona para /dashboard.
+     - Mostra erro amigável se falhar (ex.: credenciais inválidas).
+     - Botões Google/GitHub desabilitados ("Em breve").
+     - CSS próprio (login.css) com estilo "Grimório".
+
+  c) /dashboard - page.js  -> INTEGRADO DE VERDADE
+     - Protegido por RequireAuth (só acessa logado).
+     - Sidebar com perfil real: nível, XP, streak, trilha.
+     - Barra de experiência calculada de perfil.xpTotal (nível = xp/100).
+     - "Tarefas Ativas": carrega as tarefas da turma do aluno
+       (GET /tarefas?turmaId=) e o progresso dele (GET /progresso?alunoId=).
+     - Cada tarefa mostra status (Concluída/Em andamento/Disponível/
+       Bloqueada) e XP de recompensa; clicar abre popup de detalhes.
+     - Painel lateral com resumo (concluídas, em andamento, restantes).
+     - Botão Sair -> logout + redireciona /login.
+     - CSS próprio (dashboard.css).
+
+  d) /cadastro - page.js  -> MOCKUP (ainda não integrado)
+     - Formulário estático de nome, e-mail, senha, confirmar senha.
+     - NÃO envia nada ainda (sem onSubmit). Precisa de integração
+       (ver plano - risco de escalada de privilégio se cadastrar
+       professor; decisão pendente).
+
+  e) /login/recuperar-senha - page.js  -> MOCKUP
+     - Formulário estático de recuperação de senha.
+     - Precisa chamar sendPasswordResetEmail do Firebase.
+
+  f) /missoes - page.js  -> MOCKUP (dados fixos)
+     - Mapa de missões estilo RPG com 6 fases hardcoded.
+     - Perfil da sidebar fixo ("Level 14", "Mana 450/500").
+     - Aponta para rotas que ainda NÃO existem: /trilhas/loops,
+       /trilhas/condicionais, /trilhas/funcoes, /trilhas/desafio-final.
+     - Precisa derivar os estados (concluída/atual/bloqueada) do
+       progresso real.
+
+  g) /aprendizado - page.js  -> MOCKUP
+     - Trilha de conhecimento com 7 módulos hardcoded (Lógica, HTML,
+       CSS, Variáveis concluídos; Loops atual; Condicionais/Funções
+       bloqueados).
+     - Botões sem ação.
+
+  h) /trilhas/primeiro-codigo - page.js  -> MOCKUP (lição 1)
+     - Aula estática (o que é programação, exemplo em C) + quiz de
+       1 pergunta com feedback via alert().
+
+  i) /trilhas/primeiro-desafio - page.js  -> MOCKUP (desafio 1)
+     - Editor Monaco (linguagem C).
+     - Botão "Executar" é SIMULADO: setTimeout + checagem com
+       string.includes (não chama a API).
+     - Recompensa fixa "+150 XP" hardcoded.
+
+  j) /trilhas/variaveis - page.js  -> MOCKUP (lição 2)
+     - Aula estática sobre variáveis em C + quiz com alert().
+
+  k) /trilhas/variaveis-desafio - page.js  -> MOCKUP (desafio 2)
+     - Editor Monaco com "Ver solução" (preenche o código correto
+       hardcoded) e execução simulada.
+
+  Páginas INEXISTENTES (404): /inventario, /ranking, /configuracoes.
+
+2.6 O QUE JÁ ESTÁ INTEGRADO NO FRONTEND
+---------------------------------------
+- Login real (Firebase + API).
+- Guard de rota no dashboard.
+- Dashboard com dados reais (perfil, tarefas da turma, progresso).
+- Estrutura de libs pronta para TODA a integração futura
+  (api.js já tem as funções de execução, conceito, turmas, etc.).
+
+2.7 O QUE AINDA NÃO ESTÁ INTEGRADO (resumo)
+-------------------------------------------
+- Cadastro de usuário (página estática).
+- Recuperação de senha.
+- Desafios Monaco (executam simulação, não chamam /execucao).
+- Mapa de missões e aprendizado com dados reais.
+- Páginas de professor (configurações, criar tarefas/turmas/alunos).
+- Ranking (não existe endpoint no backend ainda).
+- Proteção de rotas em todas as páginas (só o dashboard tem).
+
+================================================================================
+PARTE 3 - PLANO DE INTEGRAÇÃO RESTANTE
+================================================================================
+Foi criado o documento PLANO-INTEGRACAO.md (na raiz do Programmersquest-WEB)
+com o plano detalhado do que falta para integrar 100% o frontend ao backend,
+dividido em 4 fases:
+
+  Fase 1 - Fundações: context de perfil, guard em todas as rotas, cadastro
+           e recuperação de senha reais.
+  Fase 2 - Produto principal: tela de desafio integrada ao /execucao,
+           dashboard ligando tarefa->trilha, mapa de missões real.
+  Fase 3 - Painel do professor: configurações (turmas, tarefas, usuários,
+           escala de notas) e ranking.
+  Fase 4 - Acabamento: landing, inventário, limpeza de código.
+
+================================================================================
+PARTE 4 - DADOS DE TESTE CRIADOS NO FIREBASE (projeto programmersquest2026)
+================================================================================
+- Turma: "1 DS - Turma A" (id aquQ6l6KCUhDd78aL5Bg)
+- Professor: prof.teste@etec.sp.gov.br / senha 123456
+- Aluno: aluno.teste@etec.sp.gov.br / senha 123456
+- Tarefa: "Escreva seu primeiro programa" (scaffold portugol, 50 XP)
+  - Já foi concluída pelo aluno de teste (nota 100, XP 50).
+
+================================================================================
+PARTE 5 - COMMITS E PUSHES REALIZADOS
+================================================================================
+Backend (Programmersquest-API):
+- c8cc9c0: feat - execução de código, guards, CRUD de turmas/tarefas/
+  progresso/configurações e script de criação de usuários.
+- 0317475: docs - README da API.
+
+Frontend (Programmersquest-WEB):
+- 3a5ee5a: feat - integração Firebase (login real), dashboard com dados
+  da API e plano de integração (PLANO-INTEGRACAO.md).
+- bb9b90a: docs - README do WEB.
+
+Todos enviados (push) para o GitHub:
+- https://github.com/HttpsKenzoaoki/Programmersquest-API
+- https://github.com/HttpsKenzoaoki/Programmersquest-WEB
+
+================================================================================
+FIM DO RELATÓRIO
+================================================================================

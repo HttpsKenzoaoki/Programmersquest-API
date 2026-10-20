@@ -13,6 +13,7 @@ import { TurmasService } from './turmas.service';
 import { CreateTurmaDto } from './dto/create-turma.dto';
 import { UpdateTurmaDto } from './dto/update-turma.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { Public } from '../auth/decorators/public.decorator';
 
 @Controller('turmas')
 export class TurmasController {
@@ -24,11 +25,13 @@ export class TurmasController {
     return this.turmasService.create(createTurmaDto);
   }
 
+  @Public()
   @Get()
   findAll() {
     return this.turmasService.findAll();
   }
 
+  @Public()
   @Get(':turmaId')
   findOne(@Param('turmaId') turmaId: string) {
     return this.turmasService.findOne(turmaId);

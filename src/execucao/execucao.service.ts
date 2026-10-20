@@ -128,7 +128,19 @@ export class ExecucaoService {
   private combinarScaffold(codigo: string, tarefa: Tarefa): string {
     if (tarefa.tipo !== 'scaffold' || !tarefa.scaffoldCode) return codigo;
     if (tarefa.scaffoldCode.includes(PLACEHOLDER_SCAFFOLD)) {
+      const [prefixo, sufixo] = tarefa.scaffoldCode.split(PLACEHOLDER_SCAFFOLD);
+      const trimPrefixo = (prefixo ?? '').trim();
+      const trimSufixo = (sufixo ?? '').trim();
+      if (
+        (trimPrefixo && codigo.includes(trimPrefixo)) ||
+        (trimSufixo && codigo.includes(trimSufixo))
+      ) {
+        return codigo;
+      }
       return tarefa.scaffoldCode.replace(PLACEHOLDER_SCAFFOLD, codigo);
+    }
+    if (codigo.includes(tarefa.scaffoldCode.trim())) {
+      return codigo;
     }
     return `${tarefa.scaffoldCode}\n${codigo}`;
   }
@@ -223,14 +235,6 @@ export class ExecucaoService {
         alunoId,
         tarefaId: tarefa.tarefaId,
         ...dados,
-      });
-    }
-
-    // Soma a diferença de XP no perfil do aluno
-    if (xpGanho > xpAnterior) {
-      const usuario = await this.usersService.findOne(alunoId);
-      await this.usersService.update(alunoId, {
-        xpTotal: (usuario.xpTotal ?? 0) + (xpGanho - xpAnterior),
       });
     }
 
