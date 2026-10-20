@@ -5,6 +5,7 @@ import {
   Timestamp,
 } from 'firebase-admin/firestore';
 import { FirebaseService } from '../firebase/firebase.service';
+import { calcularNivel } from '../common/utils/calcular-nivel.util';
 import { serializeFirestoreData } from '../common/utils/serialize-firestore-data.util';
 import { CreateProgressoDto } from './dto/create-progresso.dto';
 import { UpdateProgressoDto } from './dto/update-progresso.dto';
@@ -29,21 +30,47 @@ export class ProgressoService {
       createProgressoDto.tarefaId,
     );
 
+    const docRef = this.collection.doc(progressoId);
+    const anteriorSnap = await docRef.get();
+    const anterior = anteriorSnap.exists ? (anteriorSnap.data() ?? {}) : null;
+    const xpAnterior = (anterior?.xpGanho as number) ?? 0;
+    const notaAnterior = (anterior?.melhorNota as number) ?? 0;
+    const tentativasAnteriores = (anterior?.tentativas as number) ?? 0;
+
+    const xpGanho = Math.max(xpAnterior, createProgressoDto.xpGanho ?? 0);
+    const melhorNota = Math.max(
+      notaAnterior,
+      createProgressoDto.melhorNota ?? 0,
+    );
+    const tentativas =
+      createProgressoDto.tentativas ??
+      (anterior ? tentativasAnteriores + 1 : 0);
+
     const data = {
       progressoId,
       alunoId: createProgressoDto.alunoId,
       tarefaId: createProgressoDto.tarefaId,
-      status: createProgressoDto.status,
-      tentativas: createProgressoDto.tentativas ?? 0,
-      melhorNota: createProgressoDto.melhorNota ?? 0,
-      xpGanho: createProgressoDto.xpGanho ?? 0,
+      status:
+        anterior?.status === 'concluida'
+          ? 'concluida'
+          : createProgressoDto.status,
+      tentativas,
+      melhorNota,
+      xpGanho,
       ultimaTentativa: createProgressoDto.ultimaTentativa
         ? Timestamp.fromDate(new Date(createProgressoDto.ultimaTentativa))
-        : null,
+        : ((anterior?.ultimaTentativa as Timestamp | null | undefined) ?? null),
       errosComuns: createProgressoDto.errosComuns ?? [],
     };
 
-    await this.collection.doc(progressoId).set(data);
+    await docRef.set(data);
+
+    if (xpGanho > xpAnterior) {
+      await this.incrementarXpUsuario(
+        createProgressoDto.alunoId,
+        xpGanho - xpAnterior,
+      );
+    }
 
     return serializeFirestoreData<Progresso>(data);
   }
@@ -113,6 +140,10 @@ export class ProgressoService {
       throw new NotFoundException(`Progresso ${progressoId} não encontrado`);
     }
 
+    const anterior = doc.data() ?? {};
+    const xpAnterior = (anterior.xpGanho as number) ?? 0;
+    const alunoId = (anterior.alunoId as string) ?? progressoId.split('_')[0];
+
     const patch: Record<string, unknown> = { ...updateProgressoDto };
 
     if (patch.ultimaTentativa) {
@@ -121,7 +152,17 @@ export class ProgressoService {
       );
     }
 
+    let xpNovo = xpAnterior;
+    if (patch.xpGanho !== undefined) {
+      xpNovo = Math.max(xpAnterior, patch.xpGanho as number);
+      patch.xpGanho = xpNovo;
+    }
+
     await doc.ref.update(patch);
+
+    if (xpNovo > xpAnterior && alunoId) {
+      await this.incrementarXpUsuario(alunoId, xpNovo - xpAnterior);
+    }
 
     return this.findOne(progressoId);
   }
@@ -132,5 +173,21 @@ export class ProgressoService {
       throw new NotFoundException(`Progresso ${progressoId} não encontrado`);
     }
     await doc.ref.delete();
+  }
+
+  private async incrementarXpUsuario(
+    alunoId: string,
+    deltaXp: number,
+  ): Promise<void> {
+    if (deltaXp <= 0) return;
+    const userRef = this.firebase.db.collection('users').doc(alunoId);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) return;
+    const userData = userDoc.data() ?? {};
+    const novoXpTotal = ((userData.xpTotal as number) ?? 0) + deltaXp;
+    await userRef.update({
+      xpTotal: novoXpTotal,
+      nivel: calcularNivel(novoXpTotal),
+    });
   }
 }
